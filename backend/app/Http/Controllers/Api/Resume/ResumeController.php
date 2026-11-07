@@ -10,7 +10,6 @@ use App\Http\Controllers\Api\User\Traits\UserProcessRelationsTrait;
 use App\Http\Controllers\Api\User\Traits\UserUploadsTrait;
 use App\Http\Controllers\Controller;
 use App\Models\ResumeAnalytic;
-use App\Models\UserResume;
 use App\Services\Resume\ResumeDocumentService;
 use Exception;
 use Illuminate\Http\Request;
@@ -60,7 +59,7 @@ class ResumeController extends Controller
 
         try {
 
-            DB::transaction(function () use ($request) {
+            $resume = DB::transaction(function () use ($request) {
                 $user = $request->user();
 
                 $resumeCV = $request->file('resume_cv');
@@ -68,7 +67,7 @@ class ResumeController extends Controller
 
                 $pathResumeCv = null;
                 $pathResumeLinkedin = null;
-                $skills = $request->input('skills', []);
+                $skills = $request->validated('skills', []);
 
                 if (! empty($resumeCV)) {
                     $pathResumeCv = $this->storeCvResume($request, $user);
@@ -79,23 +78,29 @@ class ResumeController extends Controller
                 }
 
                 $user->update([
-                    'resume_cv' => $pathResumeCv ?? $user->resumeCV,
+                    'resume_cv' => $pathResumeCv ?? $user->resume_cv,
                     'resume_linkedin' => $pathResumeLinkedin ?? $user->resume_linkedin,
                     'github_link' => $request->input('github_link', $user->github_link),
                     'site_link' => $request->input('site_link', $user->site_link),
                 ]);
 
-                if (! empty($pathResumeCv) || ! empty($pathResumeLinkedin)) {
-                    $user->resumes()->create([
-                        'original_file_path_cv' => $pathResumeCv,
-                        'original_file_path_linkedin' => $pathResumeLinkedin,
-                    ]);
-                }
                 $this->processSkillsUser($skills, $user);
 
+                return $user->resumes()->create([
+                    'original_file_path_cv' => $pathResumeCv,
+                    'original_file_path_linkedin' => $pathResumeLinkedin,
+                    'source_context' => [
+                        'github_url' => $user->github_link,
+                        'portfolio_url' => $user->site_link,
+                        'additional_skills' => $user->skills()->get(['name', 'years'])->toArray(),
+                    ],
+                ]);
             });
 
-            return ResponseData::success('User Updated', ['message' => 'User and upload has been updated.'], 200);
+            return ResponseData::success('User Updated', [
+                'message' => 'User and upload has been updated.',
+                'user_resume_id' => $resume->id,
+            ], 200);
 
         } catch (ValidationException $exception) {
             return ResponseData::error('Validation error', ['errors' => $exception->errors()], 422);
@@ -230,12 +235,26 @@ class ResumeController extends Controller
         );
     }
 
+    public function download(Request $request, string $resume)
+    {
+        $record = $request->user()->resumes()->findOrFail($resume);
+        $path = $record->processed_file_path;
+        $disk = Storage::disk('local');
+
+        abort_unless(is_string($path) && $path !== '' && $disk->exists($path), 404, 'O PDF deste currículo ainda não está disponível.');
+
+        return $disk->download($path, 'curriculo.pdf', [
+            'Content-Type' => 'application/pdf',
+            'Cache-Control' => 'private, no-store',
+        ]);
+    }
+
     public function finish(FinishResumeRequest $request, ResumeDocumentService $documentService)
     {
 
         try {
 
-            $resume = UserResume::findOrFail($request->input('user_resume_id'));
+            $resume = $request->user()->resumes()->findOrFail($request->input('user_resume_id'));
 
             DB::transaction(function () use (
                 $request,
@@ -243,24 +262,19 @@ class ResumeController extends Controller
                 &$resume
             ) {
 
-                $analytic = ResumeAnalytic::where(
-                    'user_resume_id',
-                    $resume->id
-                )->firstOrFail();
-
-                if ($analytic->user_id !== $request->user()->id) {
-                    abort(403);
-                }
+                $analytic = $request->user()->resumeAnalytics()
+                    ->where('user_resume_id', $resume->id)->firstOrFail();
+                $review = $analytic->toArray();
 
                 $analytic->update([
 
-                    'header' => $request->header,
+                    'header' => array_replace($review['header'] ?? [], $request->input('header')),
                     'experiences' => $request->experiences ?? [],
                     'projects' => $request->projects ?? [],
                     'qualifications' => $request->qualifications ?? [],
                     'skills' => $request->skills ?? [],
                     'languages' => $request->input('languages', []),
-                    'others' => $request->others ?? [],
+                    'others' => array_replace($review['others'] ?? [], $request->input('others', [])),
 
                 ]);
 

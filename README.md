@@ -6,6 +6,13 @@ https://bomcurriculo.tech
 
 Build ATS-friendly resumes using AI.
 
+Laravel extracts PDF/DOCX files, enriches public GitHub profiles, validates data,
+and generates resumes directly through Ollama (`qwen3:4b`). No Python service is required.
+See the [migration report and operating guide](docs/migracao-llm-laravel.md) for
+contracts, configuration, tests, and remaining work.
+The [ATS PDF quality report](docs/qualidade-pdf-ats.md) documents layout,
+pagination, language handling, and validation across different professional profiles.
+
 ## About
 
 Bom Currículo is an open-source project that generates professional resumes optimized for Applicant Tracking Systems (ATS).
@@ -50,13 +57,13 @@ The screen is still evolving, but it already represents the first visual proposa
 
 ## Roadmap
 
-- [ ] Resume generation
-- [ ] LinkedIn PDF parser
-- [ ] GitHub integration
+- [x] Resume generation
+- [x] LinkedIn PDF parser
+- [x] GitHub integration
 - [ ] Portfolio analysis
 - [ ] Job matching
 - [ ] Multiple templates
-- [ ] Export to PDF
+- [x] Export to PDF
 - [ ] Export to DOCX
 
 ## Contributing
@@ -73,7 +80,6 @@ Create the environment files:
 cp .env.example .env
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env
-cp bot/.env.example bot/.env
 ```
 
 On Windows PowerShell:
@@ -82,7 +88,6 @@ On Windows PowerShell:
 Copy-Item .env.example .env
 Copy-Item backend/.env.example backend/.env
 Copy-Item frontend/.env.example frontend/.env
-Copy-Item bot/.env.example bot/.env
 ```
 
 ```bash
@@ -92,16 +97,17 @@ docker compose up --build
 The Docker stack includes Ollama and automatically downloads the model defined
 by `OLLAMA_MODEL` (default: `qwen3:4b`) into the persistent `ollama_data`
 volume. The first startup can take several minutes because that model is about
-2.5 GB. The bot reaches Ollama through the Docker network at
-`http://ollama:11434`; it does not use the bot container's `localhost`.
+2.5 GB. Laravel reaches Ollama through the Docker network at
+`http://ollama:11434`. PDF extraction uses Poppler, installed in the backend image;
+DOCX parsing and GitHub enrichment run directly in Laravel.
 
 The local default favors CPU-only development. Resume requests disable Qwen's
-thinking mode, cap generated output at 2048 tokens, and stop the complete AI
-provider chain after 240 seconds. Laravel waits up to 260 seconds for the bot,
-while Nginx waits up to 280 seconds, allowing a bot timeout to reach the client
-as a structured response. On a Ryzen 7 5700G, a representative dense resume
-completed with `qwen3:4b` in about 209 seconds; slower CPU-only machines may
-still need a faster external provider or an asynchronous workflow.
+thinking mode, cap generated output at 2048 tokens, and use a 16384-token context.
+Laravel allows 10 seconds per PDF extraction, 10 seconds per GitHub request
+(up to two), and 240 seconds for Ollama. Nginx waits up to 310 seconds.
+Generation is synchronous and has no automatic provider fallback.
+CPU inference can still take tens of seconds or minutes; see the report for
+the measured synthetic test and its limitations.
 
 To confirm that the model is available or download it again:
 
@@ -111,22 +117,19 @@ docker compose exec ollama ollama pull qwen3:4b
 ```
 
 Set `OLLAMA_MODEL` in the root `.env` before starting the stack to use another
-model. `OLLAMA_BASE_URL` may point the bot at an external Ollama deployment
-instead, but its address must be reachable from inside the bot container. For
-better local quality on sufficiently fast hardware, set `OLLAMA_MODEL=qwen3:8b`;
-that model is about 5.2 GB and remains fully supported.
+model. `OLLAMA_BASE_URL` may point Laravel at another Ollama
+deployment; its address must be reachable from the backend. Model changes
+require explicit configuration and validation on the target hardware.
 
 Services:
 
 - Frontend: http://localhost:5173
 - Backend: http://localhost:9000
-- Bot: http://localhost:8000
 - Ollama: http://localhost:11434
 
 Health endpoints:
 
 - Backend: http://localhost:9000/up
-- Bot: http://localhost:8000/health
 
 ## License
 
